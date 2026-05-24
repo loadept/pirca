@@ -68,11 +68,11 @@ func New(cfg ...*Config) func(http.Handler) http.Handler {
 			rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 			ctx := &Context{
 				Writer:    rw,
-				Request:   r,
 				parentCtx: r.Context(),
 				config:    conf,
 			}
 			r = r.WithContext(ctx)
+			ctx.Request = r
 			next.ServeHTTP(rw, r)
 		})
 	}

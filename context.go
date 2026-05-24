@@ -19,7 +19,7 @@ import (
 	"time"
 )
 
-const BodyBytesKey = "_pirca_body_bytes"
+const bodyBytesKey = "_loadept/pirca/body_bytes"
 
 // Context holds the request and response state for a single HTTP request.
 // It implements context.Context, so it can be passed directly to any function
@@ -35,6 +35,7 @@ type Context struct {
 	// alongside Context methods interchangeably.
 	Request *http.Request
 
+	parentCtx  context.Context
 	mu         sync.RWMutex
 	keys       map[any]any
 	queryCache url.Values
@@ -138,17 +139,38 @@ func (c *Context) GetQueryArray(key string) (values []string, ok bool) {
 // FormValue returns the value of a form field from the request body.
 // Works with application/x-www-form-urlencoded and multipart/form-data.
 // For query params use Query instead.
-func (c *Context) FormValue(key string) string {
-	return c.Request.PostFormValue(key)
+func (c *Context) FormValue(key string) (val string) {
+	val, _ = c.GetFormValue(key)
+	return
 }
 
 // DefaultFormValue returns the value of a form field from the request body,
 // or defaultValue if the key is not present.
+// If the key exists but is empty, returns empty string — not defaultValue.
+// For query params use DefaultQuery instead.
 func (c *Context) DefaultFormValue(key, defaultValue string) string {
-	if val := c.FormValue(key); val != "" {
+	if val, exists := c.GetFormValue(key); exists {
 		return val
 	}
 	return defaultValue
+}
+
+// GetFormValue returns the value of a form field plus a bool indicating
+// if the key exists. Unlike FormValue, it distinguishes between an empty
+// value and a missing key.
+func (c *Context) GetFormValue(key string) (string, bool) {
+	if c.Request.PostForm == nil {
+		if err := c.Request.ParseMultipartForm(c.config.MaxMultipartMemory); err != nil {
+			if !errors.Is(err, http.ErrNotMultipart) {
+				return "", false
+			}
+		}
+	}
+	vals := c.Request.PostForm[key]
+	if len(vals) == 0 {
+		return "", false
+	}
+	return vals[0], true
 }
 
 // FormFile returns the first file uploaded with the given form key.
@@ -251,6 +273,44 @@ func (c *Context) SaveUploadedFile(file *multipart.FileHeader, dst string, perm 
 	return err
 }
 
+// Bind reads the entire request body into memory and passes the raw bytes
+// to the provided binder function for deserialization.
+//
+// Unlike BindJSON or BindXML which stream directly from the request body,
+// Bind loads the full body into a []byte first. This makes it suitable for
+// custom formats (TOML, YAML, MessagePack, etc.) or when you need the raw
+// bytes before deserializing.
+//
+// The body can only be read once — use BindBodyWith if the body needs to be
+// read multiple times across middlewares and handlers.
+//
+// For JSON use BindJSON. For XML use BindXML. For cacheable reads use BindBodyWith.
+//
+// Example:
+//
+//	// Custom format
+//	ctx.Bind(&obj, func(data []byte, obj any) error {
+//		return toml.Unmarshal(data, obj)
+//	})
+//
+//	// With validation before deserializing
+//	ctx.Bind(&obj, func(data []byte, obj any) error {
+//		if !json.Valid(data) {
+//			return errors.New("invalid json")
+//		}
+//		return json.Unmarshal(data, obj)
+//	})
+func (c *Context) Bind(obj any, binder func(data []byte, obj any) error) error {
+	if c.Request.Body == nil {
+		return errors.New("pirca: invalid request")
+	}
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		return err
+	}
+	return binder(body, obj)
+}
+
 // BindJSON decodes the request body as JSON into obj.
 // Returns an error if the body is nil, the JSON is malformed,
 // or the types are incompatible with obj.
@@ -267,7 +327,7 @@ func (c *Context) SaveUploadedFile(file *multipart.FileHeader, dst string, perm 
 //	}
 func (c *Context) BindJSON(obj any) error {
 	if c.Request.Body == nil {
-		return errors.New("invalid request")
+		return errors.New("pirca: invalid request")
 	}
 	return json.NewDecoder(c.Request.Body).Decode(obj)
 }
@@ -285,7 +345,7 @@ func (c *Context) BindJSON(obj any) error {
 //	}
 func (c *Context) BindJSONStrict(obj any) error {
 	if c.Request.Body == nil {
-		return errors.New("invalid request")
+		return errors.New("pirca: invalid request")
 	}
 	decoder := json.NewDecoder(c.Request.Body)
 	decoder.DisallowUnknownFields()
@@ -308,7 +368,7 @@ func (c *Context) BindJSONStrict(obj any) error {
 //	}
 func (c *Context) BindXML(obj any) error {
 	if c.Request.Body == nil {
-		return errors.New("invalid request")
+		return errors.New("pirca: invalid request")
 	}
 	return xml.NewDecoder(c.Request.Body).Decode(obj)
 }
@@ -322,22 +382,23 @@ func (c *Context) BindXML(obj any) error {
 //
 // Example:
 //
-//	ctx.BindBodyWith(&obj, func(b []byte, v any) error {
-//		return json.Unmarshal(b, v)
+//	ctx.BindBodyWith(&obj, func(data []byte, obj any) error {
+//		return json.Unmarshal(data, obj)
 //	})
-func (c *Context) BindBodyWith(obj any, bind func(b []byte, obj any) error) error {
+func (c *Context) BindBodyWith(obj any, binder func(data []byte, obj any) error) error {
 	var body []byte
-	if cb, ok := c.Get(BodyBytesKey); ok {
-		body = cb.([]byte)
+	if cachedBody, ok := c.Get(bodyBytesKey); ok {
+		cachedBodyBytes := cachedBody.([]byte)
+		body = cachedBodyBytes
 	} else {
 		var err error
 		body, err = io.ReadAll(c.Request.Body)
 		if err != nil {
 			return err
 		}
-		c.Set(BodyBytesKey, body)
+		c.Set(bodyBytesKey, body)
 	}
-	return bind(body, obj)
+	return binder(body, obj)
 }
 
 // BindJSONWith decodes the request body as JSON into obj, caching the body
@@ -386,6 +447,26 @@ func (c *Context) BindXMLWith(obj any) error {
 	return c.BindBodyWith(obj, xml.Unmarshal)
 }
 
+// GetBodyBytes reads and returns the raw request body as bytes.
+// The body can only be read once — subsequent calls will return empty bytes.
+// For cacheable reads use BindBodyWith instead.
+//
+// Returns an error if the body is nil.
+//
+// Example:
+//
+//	body, err := ctx.GetBodyBytes()
+//	if err != nil {
+//		_ = ctx.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+//		return
+//	}
+func (c *Context) GetBodyBytes() ([]byte, error) {
+	if c.Request.Body == nil {
+		return nil, errors.New("pirca: cannot read nil body")
+	}
+	return io.ReadAll(c.Request.Body)
+}
+
 // Status writes the HTTP status code to the response header.
 // Must be called before writing the response body.
 func (c *Context) Status(code int) {
@@ -405,15 +486,6 @@ func (c *Context) Header(key, value string) {
 // GetHeader returns the value of the request header with the given key.
 func (c *Context) GetHeader(key string) string {
 	return c.Request.Header.Get(key)
-}
-
-// GetRawData reads and returns the raw request body as bytes.
-// Returns an error if the body is nil.
-func (c *Context) GetRawData() ([]byte, error) {
-	if c.Request.Body == nil {
-		return nil, errors.New("cannot read nil body")
-	}
-	return io.ReadAll(c.Request.Body)
 }
 
 // SetSameSite sets the SameSite attribute used for cookies set via
@@ -645,19 +717,19 @@ func (c *Context) Delete(key any) {
 // Deadline implements context.Context. It delegates to the underlying
 // request context, which is canceled when the client disconnects.
 func (c *Context) Deadline() (deadline time.Time, ok bool) {
-	return c.Request.Context().Deadline()
+	return c.parentCtx.Deadline()
 }
 
 // Done implements context.Context. The returned channel is closed when the
 // request context is canceled — typically when the client disconnects.
 func (c *Context) Done() <-chan struct{} {
-	return c.Request.Context().Done()
+	return c.parentCtx.Done()
 }
 
 // Err implements context.Context. It returns the error from the underlying
 // request context, or nil if the context has not been canceled.
 func (c *Context) Err() error {
-	return c.Request.Context().Err()
+	return c.parentCtx.Err()
 }
 
 // Value implements context.Context. It looks up key in the following order:
@@ -676,5 +748,5 @@ func (c *Context) Value(key any) any {
 			return val
 		}
 	}
-	return c.Request.Context().Value(key)
+	return c.parentCtx.Value(key)
 }

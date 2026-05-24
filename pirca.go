@@ -67,9 +67,10 @@ func New(cfg ...*Config) func(http.Handler) http.Handler {
 			}
 			rw := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
 			ctx := &Context{
-				Writer:  rw,
-				Request: r,
-				config:  conf,
+				Writer:    rw,
+				Request:   r,
+				parentCtx: r.Context(),
+				config:    conf,
 			}
 			r = r.WithContext(ctx)
 			next.ServeHTTP(rw, r)

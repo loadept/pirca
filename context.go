@@ -8,8 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -34,9 +38,122 @@ type Context struct {
 	mu       sync.RWMutex
 	keys     map[any]any
 	sameSite http.SameSite
+	config   *Config
 }
 
 var _ context.Context = (*Context)(nil)
+
+// FormValue returns the value of a form field from the request body.
+// Works with application/x-www-form-urlencoded and multipart/form-data.
+// For query params use Query instead.
+func (c *Context) FormValue(key string) string {
+	return c.Request.PostFormValue(key)
+}
+
+// DefaultFormValue returns the value of a form field from the request body,
+// or defaultValue if the key is not present.
+func (c *Context) DefaultFormValue(key, defaultValue string) string {
+	if val := c.FormValue(key); val != "" {
+		return val
+	}
+	return defaultValue
+}
+
+// FormFile returns the first file uploaded with the given form key.
+// Parses the multipart form if not already parsed, using MaxMultipartMemory from Config.
+//
+// Use SaveUploadedFile to save the file to disk, or call file.Open()
+// to read its contents directly.
+//
+// Example:
+//
+//	file, err := ctx.FormFile("avatar")
+//	if err != nil {
+//		_ = ctx.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+//		return
+//	}
+//	ctx.SaveUploadedFile(file, "./uploads/"+file.Filename)
+func (c *Context) FormFile(name string) (*multipart.FileHeader, error) {
+	if c.Request.MultipartForm == nil {
+		if err := c.Request.ParseMultipartForm(c.config.MaxMultipartMemory); err != nil {
+			return nil, err
+		}
+	}
+	f, fh, err := c.Request.FormFile(name)
+	if err != nil {
+		return nil, err
+	}
+	f.Close()
+	return fh, nil
+}
+
+// MultipartForm parses and returns the full multipart form data, including
+// all fields and uploaded files. Uses MaxMultipartMemory from Config.
+//
+// Use FormFile for single file uploads. Use MultipartForm when you need
+// access to multiple files or all form fields at once.
+//
+// Note: if reading file contents manually via file.Open(), always close
+// the returned reader after use.
+//
+// Example:
+//
+//	form, err := ctx.MultipartForm()
+//	if err != nil {
+//		_ = ctx.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+//		return
+//	}
+//	files := form.File["avatars"]
+//	for _, f := range files {
+//		ctx.SaveUploadedFile(f, "./uploads/"+f.Filename)
+//	}
+func (c *Context) MultipartForm() (*multipart.Form, error) {
+	err := c.Request.ParseMultipartForm(c.config.MaxMultipartMemory)
+	return c.Request.MultipartForm, err
+}
+
+// SaveUploadedFile saves a multipart file to the given destination path.
+// Creates any necessary parent directories automatically.
+// The optional perm parameter sets the directory permissions, defaulting to 0o750.
+//
+// The uploaded file is opened and closed internally — the caller does not
+// need to manage the file lifecycle.
+//
+// Example:
+//
+//	file, _ := ctx.FormFile("avatar")
+//	if err := ctx.SaveUploadedFile(file, "./uploads/"+file.Filename); err != nil {
+//		_ = ctx.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+//		return
+//	}
+func (c *Context) SaveUploadedFile(file *multipart.FileHeader, dst string, perm ...fs.FileMode) error {
+	src, err := file.Open()
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	var mode os.FileMode = 0o750
+	if len(perm) > 0 {
+		mode = perm[0]
+	}
+	dir := filepath.Dir(dst)
+	if err = os.MkdirAll(dir, mode); err != nil {
+		return err
+	}
+	if err = os.Chmod(dir, mode); err != nil {
+		return err
+	}
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, src)
+	return err
+}
 
 // BindJSON decodes the request body as JSON into obj.
 // Returns an error if the body is nil, the JSON is malformed,
@@ -419,6 +536,14 @@ func (c *Context) Get(key any) (value any, exists bool) {
 	defer c.mu.RUnlock()
 	value, exists = c.keys[key]
 	return
+}
+
+func (c *Context) Delete(key any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.keys != nil {
+		delete(c.keys, key)
+	}
 }
 
 // Deadline implements context.Context. It delegates to the underlying

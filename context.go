@@ -1,6 +1,7 @@
 package pirca
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"encoding/xml"
@@ -13,6 +14,8 @@ import (
 	"sync"
 	"time"
 )
+
+const BodyBytesKey = "_pirca_body_bytes"
 
 // Context holds the request and response state for a single HTTP request.
 // It implements context.Context, so it can be passed directly to any function
@@ -34,6 +37,141 @@ type Context struct {
 }
 
 var _ context.Context = (*Context)(nil)
+
+// BindJSON decodes the request body as JSON into obj.
+// Returns an error if the body is nil, the JSON is malformed,
+// or the types are incompatible with obj.
+//
+// The body can only be read once. Use BindJSONWith if the body
+// needs to be read multiple times across middlewares and handlers.
+//
+// Example:
+//
+//	var payload MyStruct
+//	if err := ctx.BindJSON(&payload); err != nil {
+//		_ = ctx.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+//		return
+//	}
+func (c *Context) BindJSON(obj any) error {
+	if c.Request.Body == nil {
+		return errors.New("invalid request")
+	}
+	return json.NewDecoder(c.Request.Body).Decode(obj)
+}
+
+// BindJSONStrict is like BindJSON but returns an error if the request body
+// contains fields that are not present in obj.
+// Useful for strict API validation where unknown fields should be rejected.
+//
+// Example:
+//
+//	var payload MyStruct
+//	if err := ctx.BindJSONStrict(&payload); err != nil {
+//		_ = ctx.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+//		return
+//	}
+func (c *Context) BindJSONStrict(obj any) error {
+	if c.Request.Body == nil {
+		return errors.New("invalid request")
+	}
+	decoder := json.NewDecoder(c.Request.Body)
+	decoder.DisallowUnknownFields()
+	return decoder.Decode(obj)
+}
+
+// BindXML decodes the request body as XML into obj.
+// Returns an error if the body is nil, the XML is malformed,
+// or the types are incompatible with obj.
+//
+// The body can only be read once. Use BindXMLWith if the body
+// needs to be read multiple times across middlewares and handlers.
+//
+// Example:
+//
+//	var payload MyStruct
+//	if err := ctx.BindXML(&payload); err != nil {
+//		_ = ctx.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+//		return
+//	}
+func (c *Context) BindXML(obj any) error {
+	if c.Request.Body == nil {
+		return errors.New("invalid request")
+	}
+	return xml.NewDecoder(c.Request.Body).Decode(obj)
+}
+
+// BindBodyWith reads the request body once and caches it in the Context store,
+// allowing subsequent calls to reuse the same body bytes across middlewares
+// and handlers without hitting EOF.
+//
+// bind is a function that deserializes the body bytes into obj.
+// Use BindJSONWith or BindXMLWith for the most common cases.
+//
+// Example:
+//
+//	ctx.BindBodyWith(&obj, func(b []byte, v any) error {
+//		return json.Unmarshal(b, v)
+//	})
+func (c *Context) BindBodyWith(obj any, bind func(b []byte, obj any) error) error {
+	var body []byte
+	if cb, ok := c.Get(BodyBytesKey); ok {
+		body = cb.([]byte)
+	} else {
+		var err error
+		body, err = io.ReadAll(c.Request.Body)
+		if err != nil {
+			return err
+		}
+		c.Set(BodyBytesKey, body)
+	}
+	return bind(body, obj)
+}
+
+// BindJSONWith decodes the request body as JSON into obj, caching the body
+// so it can be read multiple times. See BindBodyWith for details.
+//
+// Example:
+//
+//	var payload MyStruct
+//	if err := ctx.BindJSONWith(&payload); err != nil {
+//		_ = ctx.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+//		return
+//	}
+func (c *Context) BindJSONWith(obj any) error {
+	return c.BindBodyWith(obj, json.Unmarshal)
+}
+
+// BindJSONStrictWith is like BindJSONWith but returns an error if the request
+// body contains fields not present in obj. The body is cached for reuse.
+//
+// Example:
+//
+//	var payload MyStruct
+//	if err := ctx.BindJSONStrictWith(&payload); err != nil {
+//		_ = ctx.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+//		return
+//	}
+func (c *Context) BindJSONStrictWith(obj any) error {
+	return c.BindBodyWith(obj, func(b []byte, obj any) error {
+		decoder := json.NewDecoder(bytes.NewReader(b))
+		decoder.DisallowUnknownFields()
+		return decoder.Decode(obj)
+	})
+}
+
+// BindXMLWith decodes the request body as XML into obj, caching the body
+// so it can be read multiple times. See BindBodyWith for details.
+//
+// Example:
+//
+//	var payload MyStruct
+//	if err := ctx.BindXMLWith(&payload); err != nil {
+//		_ = ctx.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
+//		return
+//	}
+func (c *Context) BindXMLWith(obj any) error {
+	return c.BindBodyWith(obj, xml.Unmarshal)
+}
 
 // Status writes the HTTP status code to the response header.
 // Must be called before writing the response body.

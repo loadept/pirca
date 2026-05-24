@@ -35,13 +35,105 @@ type Context struct {
 	// alongside Context methods interchangeably.
 	Request *http.Request
 
-	mu       sync.RWMutex
-	keys     map[any]any
-	sameSite http.SameSite
-	config   *Config
+	mu         sync.RWMutex
+	keys       map[any]any
+	queryCache url.Values
+	sameSite   http.SameSite
+	config     *Config
 }
 
 var _ context.Context = (*Context)(nil)
+
+// Param returns the value of the URL path param with the given key.
+// Requires Go 1.22+ net/http pattern matching.
+//
+// Example:
+//
+//	// GET /user/{id}
+//	id := ctx.Param("id") // "123"
+func (c *Context) Param(key string) string {
+	return c.Request.PathValue(key)
+}
+
+func (c *Context) initQueryCache() {
+	if c.queryCache == nil {
+		if c.Request != nil && c.Request.URL != nil {
+			c.queryCache = c.Request.URL.Query()
+		} else {
+			c.queryCache = url.Values{}
+		}
+	}
+}
+
+// Query returns the value of the URL query param with the given key.
+// Returns empty string if not present.
+//
+// Example:
+//
+//	// GET /search?q=golang&page=1
+//	q := ctx.Query("q")       // "golang"
+//	page := ctx.Query("page") // "1"
+func (c *Context) Query(key string) (val string) {
+	val, _ = c.GetQuery(key)
+	return
+}
+
+// DefaultQuery returns the value of the URL query param with the given key,
+// or defaultValue if not present.
+//
+// Example:
+//
+//	// GET /search?q=golang
+//	page := ctx.DefaultQuery("page", "1") // "1" — not in URL, uses default
+func (c *Context) DefaultQuery(key, defaultValue string) string {
+	if val, ok := c.GetQuery(key); ok {
+		return val
+	}
+	return defaultValue
+}
+
+// GetQuery returns the value of the URL query param with the given key,
+// plus a boolean indicating whether the key exists.
+// Unlike Query, it distinguishes between a missing key and an empty value.
+//
+// Example:
+//
+//	// GET /?name=jesus&empty=
+//	ctx.GetQuery("name")  // ("gopher", true)
+//	ctx.GetQuery("empty") // ("", true)  — exists but empty
+//	ctx.GetQuery("wtf")   // ("", false) — does not exist
+func (c *Context) GetQuery(key string) (string, bool) {
+	if values, ok := c.GetQueryArray(key); ok {
+		return values[0], ok
+	}
+	return "", false
+}
+
+// QueryArray returns all values for the given query key as a slice.
+// Useful when the same key appears multiple times in the URL.
+//
+// Example:
+//
+//	// GET /search?color=red&color=blue&color=green
+//	colors := ctx.QueryArray("color") // ["red", "blue", "green"]
+func (c *Context) QueryArray(key string) (values []string) {
+	values, _ = c.GetQueryArray(key)
+	return
+}
+
+// GetQueryArray returns all values for the given query key as a slice,
+// plus a boolean indicating whether the key exists.
+//
+// Example:
+//
+//	// GET /search?color=red&color=blue
+//	values, ok := ctx.GetQueryArray("color") // (["red", "blue"], true)
+//	values, ok := ctx.GetQueryArray("wtf")   // ([], false)
+func (c *Context) GetQueryArray(key string) (values []string, ok bool) {
+	c.initQueryCache()
+	values, ok = c.queryCache[key]
+	return
+}
 
 // FormValue returns the value of a form field from the request body.
 // Works with application/x-www-form-urlencoded and multipart/form-data.

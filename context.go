@@ -179,11 +179,6 @@ func (c *Context) Status(code int) {
 	c.Writer.WriteHeader(code)
 }
 
-// GetStatus returns the HTTP status code written to the response.
-func (c *Context) GetStatus() int {
-	return c.Writer.(*responseWriter).statusCode
-}
-
 // Header sets a response header key to value.
 // If value is empty, the header is deleted.
 func (c *Context) Header(key, value string) {
@@ -383,6 +378,11 @@ func (c *Context) FileAttachment(filepath, filename string) {
 	http.ServeFile(c.Writer, c.Request, filepath)
 }
 
+// GetStatus returns the HTTP status code written to the response.
+func (c *Context) GetStatus() int {
+	return c.Writer.(*responseWriter).statusCode
+}
+
 // BytesWritten returns the total number of bytes written to the response body.
 func (c *Context) BytesWritten() int {
 	return c.Writer.(*responseWriter).bytesWritten
@@ -451,7 +451,7 @@ func (c *Context) Err() error {
 // their own values.
 func (c *Context) Value(key any) any {
 	if keyAsString, ok := key.(string); ok {
-		if val, exists := c.keys[keyAsString]; exists {
+		if val, exists := c.Get(keyAsString); exists {
 			return val
 		}
 	}

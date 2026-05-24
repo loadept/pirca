@@ -62,8 +62,12 @@ func (c *Context) DefaultFormValue(key, defaultValue string) string {
 // FormFile returns the first file uploaded with the given form key.
 // Parses the multipart form if not already parsed, using MaxMultipartMemory from Config.
 //
+// Returns the file metadata only — the internal file handle is closed automatically.
 // Use SaveUploadedFile to save the file to disk, or call file.Open()
 // to read its contents directly.
+//
+// Note: if reading file contents manually via file.Open(), always close
+// the returned reader after use.
 //
 // Example:
 //

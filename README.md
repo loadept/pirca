@@ -11,6 +11,10 @@ Built on patterns from **Gin**, Pirca follows the same conventions and logic, ad
 - **Captures status code and bytes written** — perfect for logging, metrics, and observability middlewares.
 - **Accelerates development** — JSON/XML binders, response writers, file uploads, cookies, query params, form values — all ready to use.
 
+## Requirements
+
+- Go 1.22 or later
+
 ## Installation
 
 ```bash

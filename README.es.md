@@ -11,6 +11,10 @@ Basado en **Gin**, Pirca sigue las mismas convenciones y lógica, adaptado para 
 - **Captura status code y bytes escritos** — ideal para middlewares de logging, métricas y observabilidad.
 - **Acelera el desarrollo** — binders JSON/XML, escritura de respuestas, subida de archivos, cookies, query params, formularios — todo listo para usar.
 
+## Requisitos
+
+- Go 1.22 o superior
+
 ## Instalación
 
 ```bash

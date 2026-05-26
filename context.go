@@ -388,9 +388,11 @@ func (c *Context) BindXML(obj any) error {
 func (c *Context) BindBodyWith(obj any, binder func(data []byte, obj any) error) error {
 	var body []byte
 	if cachedBody, ok := c.Get(bodyBytesKey); ok {
-		cachedBodyBytes := cachedBody.([]byte)
-		body = cachedBodyBytes
+		body = cachedBody.([]byte)
 	} else {
+		if c.Request.Body == nil {
+			return errors.New("pirca: invalid request")
+		}
 		var err error
 		body, err = io.ReadAll(c.Request.Body)
 		if err != nil {
@@ -465,6 +467,35 @@ func (c *Context) GetBodyBytes() ([]byte, error) {
 		return nil, errors.New("pirca: cannot read nil body")
 	}
 	return io.ReadAll(c.Request.Body)
+}
+
+// GetBodyWith reads the request body and caches it, returning the raw bytes.
+// Subsequent calls return the cached bytes without reading the body again.
+//
+// It is a convenience wrapper around BindBodyWith for cases where you need
+// the raw bytes without deserializing — for example in HMAC verification
+// or custom parsing middlewares.
+//
+// Example:
+//
+//	// Middleware
+//	body, err := ctx.GetBodyWith()
+//	if err != nil {
+//		ctx.String(http.StatusInternalServerError, "internal error")
+//		return
+//	}
+//	// verify HMAC with body...
+//
+//	// Handler — body already cached
+//	var payload MyStruct
+//	ctx.BindJSONWith(&payload)
+func (c *Context) GetBodyWith() ([]byte, error) {
+	var raw []byte
+	err := c.BindBodyWith(&raw, func(data []byte, obj any) error {
+		*obj.(*[]byte) = data
+		return nil
+	})
+	return raw, err
 }
 
 // Status writes the HTTP status code to the response header.

@@ -37,7 +37,7 @@ type Context struct {
 
 	parentCtx  context.Context
 	mu         sync.RWMutex
-	keys       map[any]any
+	keys       map[string]any
 	queryCache url.Values
 	sameSite   http.SameSite
 	config     *Config
@@ -712,11 +712,11 @@ func (c *Context) BytesWritten() int {
 //
 //	ctx.Set("userID", "123")
 //	ctx.Set("role", "admin")
-func (c *Context) Set(key any, value any) {
+func (c *Context) Set(key string, value any) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.keys == nil {
-		c.keys = make(map[any]any)
+		c.keys = make(map[string]any)
 	}
 	c.keys[key] = value
 }
@@ -730,14 +730,14 @@ func (c *Context) Set(key any, value any) {
 //	if userID, ok := ctx.Get("userID"); ok {
 //		fmt.Println(userID)
 //	}
-func (c *Context) Get(key any) (value any, exists bool) {
+func (c *Context) Get(key string) (value any, exists bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	value, exists = c.keys[key]
 	return
 }
 
-func (c *Context) Delete(key any) {
+func (c *Context) Delete(key string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.keys != nil {
